@@ -1,0 +1,10 @@
+# requirements.txt
+Flask
+Flask-SocketIO
+eventlet
+gunicorn
+tinytag
+python-magic
+SQLAlchemy
+psycopg2-binary
+boto3

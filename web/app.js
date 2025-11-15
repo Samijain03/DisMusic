@@ -1,13 +1,17 @@
 /* web/app.js
-   Full client-side logic integrated with Flask backend endpoints:
-   - audio + WebAudio visuals (waveform, bars, circle, particles)
-   - playlist rendering + drag/drop + upload to Flask
-   - delete / rename / reorder (server)
-   - IndexedDB caching helpers
+   Full client-side logic with Flask-SocketIO synchronization.
+   - All playback controls are server-authoritative.
+   - Client emits 'player_action' and listens for 'state_update'.
 */
 
 (() => {
-  // ---- Flask server API ----
+  // ---- NEW: Socket.IO setup ----
+  const socket = io();
+  let isSyncing = false; // Lock to prevent event feedback loops
+
+  // ---- Flask server API (UNCHANGED) ----
+  // These functions (uploadSong, loadPlaylistFromServer, etc.)
+  // are still used for managing the playlist, just not for playback.
   async function uploadSong(file) {
     const buf = await file.arrayBuffer();
     const res = await fetch("/upload", {
@@ -15,23 +19,13 @@
       headers: { "X-Filename": file.name },
       body: buf
     });
-    return await res.json(); // {status, path, name}
+    return await res.json(); 
   }
-
-  async function savePlaylistToServer(songs) {
-    await fetch("/save-playlist", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ songs })
-    });
-  }
-
   async function loadPlaylistFromServer() {
     const res = await fetch("/playlist");
     if (!res.ok) return [];
     return await res.json();
   }
-
   async function deleteSongOnServer(id) {
     const res = await fetch("/playlist/delete", {
       method: "POST",
@@ -40,7 +34,6 @@
     });
     return res.json();
   }
-
   async function renameSongOnServer(id, name) {
     const res = await fetch("/playlist/rename", {
       method: "POST",
@@ -49,7 +42,6 @@
     });
     return res.json();
   }
-
   async function reorderOnServer(order) {
     const res = await fetch("/playlist/reorder", {
       method: "POST",
@@ -67,17 +59,20 @@
   const pauseBtn = document.getElementById("pauseBtn");
   const muteBtn = document.getElementById("muteBtn");
   const volumeEl = document.getElementById("volume");
-  const seekSec = document.getElementById("seekSec");
-  const seekBtn = document.getElementById("seekBtn");
   const loopToggle = document.getElementById("loopToggle");
   const songName = document.getElementById("songName");
-  const durationEl = document.getElementById("duration");
-  const currentEl = document.getElementById("current");
   const playlistEl = document.getElementById("playlist");
   const refreshBtn = document.getElementById("refreshList");
-  const saveBtn = document.getElementById("saveList");
   const vizSelect = document.getElementById("vizSelect");
   const sensitivityEl = document.getElementById("sensitivity");
+  const songArtist = document.getElementById("songArtist");
+  const songAlbum = document.getElementById("songAlbum");
+  const albumArt = document.getElementById("albumArt");
+  const audioOutputEl = document.getElementById("audioOutput");
+  const seekBar = document.getElementById("seekBar");
+  const currentTimeEl = document.getElementById("currentTime");
+  const durationTimeEl = document.getElementById("durationTime");
+  const artUploader = document.getElementById("artUploader");
 
   const canvas = document.getElementById("visual");
   const ctx = canvas.getContext("2d");
@@ -86,12 +81,10 @@
   let vizMode = vizSelect.value || 'wave';
   let sensitivity = parseFloat(sensitivityEl.value) || 1.0;
 
-  // playlist model
-  // item shape: { id, name, url, origin: 'local'|'remote', size, createdAt }
   let playlist = [];
 
-  // IndexedDB helpers
-  function openDB() {
+  // IndexedDB helpers (no changes)
+  function openDB() { /* ... no change ... */ 
     return new Promise((resolve, reject) => {
       const req = indexedDB.open('darkwave-db', 1);
       req.onupgradeneeded = e => {
@@ -103,8 +96,7 @@
       req.onerror = () => reject(req.error);
     });
   }
-
-  async function saveFileToIDB(id, blob) {
+  async function saveFileToIDB(id, blob) { /* ... no change ... */ 
     const db = await openDB();
     return new Promise((res, rej) => {
       const tx = db.transaction('files', 'readwrite');
@@ -113,8 +105,7 @@
       tx.onerror = () => rej(tx.error);
     });
   }
-
-  async function getFileFromIDB(id) {
+  async function getFileFromIDB(id) { /* ... no change ... */
     const db = await openDB();
     return new Promise((res, rej) => {
       const tx = db.transaction('files','readonly');
@@ -123,8 +114,7 @@
       req.onerror = () => rej(req.error);
     });
   }
-
-  async function saveMeta(k, v) {
+  async function saveMeta(k, v) { /* ... no change ... */
     const db = await openDB();
     return new Promise((res, rej) => {
       const tx = db.transaction('meta','readwrite');
@@ -133,7 +123,7 @@
       tx.onerror = () => rej(tx.error);
     });
   }
-  async function getMeta(k) {
+  async function getMeta(k) { /* ... no change ... */
     const db = await openDB();
     return new Promise((res, rej) => {
       const tx = db.transaction('meta','readonly');
@@ -142,6 +132,7 @@
       req.onerror = () => rej(req.error);
     });
   }
+  // --- end IDB ---
 
   function timeFmt(t) {
     if (!isFinite(t) || isNaN(t)) return "0:00";
@@ -150,7 +141,8 @@
     return `${m}:${s}`;
   }
 
-  function ensureAudioCtx() {
+  // --- Visualizer functions (no changes) ---
+  function ensureAudioCtx() { /* ... no change ... */ 
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (!sourceNode) {
       try { sourceNode = audioCtx.createMediaElementSource(audio); } catch(e){ console.warn(e); }
@@ -165,29 +157,26 @@
     sourceNode.connect(analyser);
     analyser.connect(audioCtx.destination);
   }
-
-  function resizeCanvas() {
+  function resizeCanvas() { /* ... no change ... */ 
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
-    canvas.width = Math.max(300, Math.floor(w * dpr));
-    canvas.height = Math.max(120, Math.floor(h * dpr));
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (w > 0 && h > 0) {
+        canvas.width = Math.max(300, Math.floor(w * dpr));
+        canvas.height = Math.max(120, Math.floor(h * dpr));
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
   }
-
-  function draw() {
-    if (!analyser) return;
+  function draw() { /* ... no change ... */
+    if (!analyser || canvas.clientWidth === 0) return;
     analyser.getByteTimeDomainData(dataArray);
     analyser.getByteFrequencyData(freqArray);
-
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
     ctx.clearRect(0,0,w,h);
-
     ctx.fillStyle = "rgba(0,0,0,0)";
     ctx.fillRect(0,0,w,h);
     ctx.lineJoin = 'round';
-
     const mode = vizMode;
     if (mode === 'wave') {
       ctx.lineWidth = 2;
@@ -204,7 +193,6 @@
         x += slice;
       }
       ctx.stroke();
-
     } else if (mode === 'bars') {
       const bars = 64;
       const binSize = Math.floor(freqArray.length / bars);
@@ -220,7 +208,6 @@
         ctx.fillStyle = g;
         ctx.fillRect(x, h - scaled, barW, scaled);
       }
-
     } else if (mode === 'circle') {
       const cx = w/2, cy = h/2; const radius = Math.min(w,h) * 0.18; const bins = 120;
       const binSize = Math.floor(freqArray.length / bins);
@@ -238,7 +225,6 @@
         ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
       }
-
     } else if (mode === 'particles') {
       const lowBins = 8; let lowSum = 0; for (let i=0;i<lowBins;i++) lowSum += freqArray[i] || 0;
       const energy = (lowSum / (lowBins * 255)) * sensitivity;
@@ -255,32 +241,35 @@
         ctx.beginPath(); ctx.fillStyle = `rgba(32,201,184,${0.05 + Math.random()*0.2})`; ctx.arc(x,y,size,0,Math.PI*2); ctx.fill();
       }
     }
-
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = "rgba(32,201,184,0.01)";
     ctx.fillRect(0,0,w,h);
     ctx.globalCompositeOperation = 'source-over';
-
     rafId = requestAnimationFrame(draw);
   }
-
   function startVisuals() { if (!audioCtx) ensureAudioCtx(); if (!rafId) { resizeCanvas(); rafId = requestAnimationFrame(draw); } }
   function stopVisuals() { if (rafId) { cancelAnimationFrame(rafId); rafId = null; } }
 
-  // ==== UI: render playlist ====
+  // ==== UI: render playlist (no changes) ====
   function renderPlaylist() {
     playlistEl.innerHTML = '';
     playlist.forEach(item => {
       const el = document.createElement('div');
-      el.className = 'playlist-item item';
+      el.className = 'playlist-item';
       el.draggable = true;
       el.dataset.id = String(item.id);
+      const title = item.title || item.name;
+      const artist = item.artist || 'Unknown Artist';
       el.innerHTML = `
         <div class="song-row-inner">
-          <div class="song-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+          <div class="song-info">
+            <div class="song-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+            <div class="song-artist" title="${escapeHtml(artist)}">${escapeHtml(artist)}</div>
+          </div>
           <div class="song-actions">
             <button class="btn small play-song" data-id="${item.id}">Play</button>
             <button class="btn small cache-song" data-id="${item.id}">Cache</button>
+            <button class="btn small upload-art" data-id="${item.id}">🖼️ Art</button>
             <button class="btn small rename" data-id="${item.id}">✏️</button>
             <button class="btn small delete" data-id="${item.id}">🗑️</button>
             <span class="drag-handle">☰</span>
@@ -290,104 +279,116 @@
       playlistEl.appendChild(el);
     });
   }
-
   function escapeHtml(s) {
     return (s + "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  // ==== Play item (IDB cache first) ====
+  // ==== Play item (Helper function) ====
+  // This function is now ONLY for loading the song data.
+  // It does NOT emit any events.
   async function playItem(item) {
-    songName.textContent = item.name;
+    if (!item) return;
+    songName.textContent = item.title || item.name;
+    songArtist.textContent = item.artist || '---';
+    songAlbum.textContent = item.album || '---';
+
+    if (item.has_art) {
+      albumArt.src = `/art/${item.id}.jpg?t=${new Date().getTime()}`;
+      albumArt.style.display = 'block';
+    } else {
+      albumArt.src = '';
+      albumArt.style.display = 'none';
+    }
+
     try {
       const cached = await getFileFromIDB(item.id);
       if (cached) {
         const url = URL.createObjectURL(cached);
         audio.src = url;
         audio.dataset.id = item.id;
-        await audio.play();
-        startVisuals();
-        return;
+        return; // Return promise, don't play
       }
     } catch (e) { console.warn('IDB check failed', e); }
-    // remote: use stream route
+    
     audio.src = "/stream/" + item.path;
     audio.dataset.id = item.id;
-    await audio.play();
-    startVisuals();
-    // background cache
+    
     if (item.origin === 'remote') {
       fetch("/stream/" + item.path).then(r => r.blob()).then(b => saveFileToIDB(item.id, b)).catch(e => console.warn('cache failed', e));
     }
+    // Return a promise that resolves when metadata is loaded
+    return new Promise((resolve) => {
+        audio.addEventListener('loadedmetadata', resolve, { once: true });
+    });
   }
 
-  // ==== Load playlist (server first, fallback to IDB meta) ====
+  // ==== Load/Save playlist (no changes) ====
   async function loadLocalPlaylist() {
     try {
       const serverList = await loadPlaylistFromServer();
       if (Array.isArray(serverList) && serverList.length) {
-        playlist = serverList.map(s => ({
-          id: String(s.id),
-          name: s.name,
-          path: s.path,
-          origin: 'remote',
-          createdAt: s.createdAt
-        }));
+        playlist = serverList.map(s => ({...s, id: String(s.id) }));
         renderPlaylist();
         await saveMeta('playlist', playlist);
         return;
       }
     } catch(e) { console.warn('server playlist fetch failed', e); }
-
     const saved = await getMeta('playlist');
     if (saved && Array.isArray(saved)) {
       playlist = saved;
       renderPlaylist();
     }
   }
-
   async function saveLocalPlaylist() {
     await saveMeta('playlist', playlist);
   }
 
-  // ==== Add file: upload to server, replace temp entry with server entry ====
+  // ==== Add file (no changes) ====
   async function addFileLocal(file) {
     const tempId = `temp_${Date.now()}_${file.name}`;
-    const tempItem = { id: tempId, name: file.name, path: URL.createObjectURL(file), origin: 'local', size: file.size, createdAt: new Date().toISOString() };
+    const tempItem = { 
+      id: tempId, name: file.name, path: URL.createObjectURL(file), 
+      title: 'Uploading...', artist: file.name, album: '', 
+      origin: 'local', size: file.size, createdAt: new Date().toISOString() 
+    };
     playlist.unshift(tempItem);
     renderPlaylist();
-    saveLocalPlaylist();
-
+    
     try {
       const res = await uploadSong(file);
-      if (res && res.status === 'ok') {
-        // Replace temp with server item
-        const serverItem = { id: String(res.name + "_" + Date.now()), name: res.name, path: res.path, origin: 'remote', createdAt: new Date().toISOString() };
-        // remove first occurrence of tempId
-        playlist = playlist.filter(p => p.id !== tempId);
-        playlist.unshift(serverItem);
+      if (res && res.id) {
+        const serverItem = { ...res, id: String(res.id), origin: 'remote' };
+        const tempIndex = playlist.findIndex(p => p.id === tempId);
+        if (tempIndex > -1) {
+          playlist[tempIndex] = serverItem;
+        } else {
+          playlist = playlist.filter(p => p.id !== tempId);
+          playlist.unshift(serverItem);
+        }
         renderPlaylist();
-        saveLocalPlaylist();
-        // cache remote file
+        saveLocalPlaylist(); 
         try {
-          const blob = await fetch("/stream/" + serverItem.path).then(r => r.blob());
-          await saveFileToIDB(serverItem.id, blob);
+          await saveFileToIDB(serverItem.id, file);
         } catch(e){ console.warn('cache server file failed', e); }
       } else {
-        alert('Upload failed');
+        alert('Upload failed: ' + (res.error || 'Unknown error'));
+        playlist = playlist.filter(p => p.id !== tempId);
+        renderPlaylist();
       }
     } catch (e) {
       console.error('upload failed', e);
       alert('Upload failed: ' + e.message);
+      playlist = playlist.filter(p => p.id !== tempId);
+      renderPlaylist();
     }
   }
 
-  // ==== Event handlers: file input / drag&drop ====
+  // ==== Event handlers: file input / drag&drop (no changes) ====
   fileInput.addEventListener('change', (e) => {
     const f = e.target.files && e.target.files[0];
     if (!f) return;
     addFileLocal(f);
   });
-
   document.body.addEventListener('dragover', (e) => { e.preventDefault(); });
   document.body.addEventListener('drop', (e) => {
     e.preventDefault();
@@ -395,99 +396,328 @@
     if (f && f.type.startsWith('audio/')) addFileLocal(f);
   });
 
-  // play/pause/mute/volume/seek/loop
-  playBtn.addEventListener('click', async () => { if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume(); audio.play(); startVisuals(); });
-  pauseBtn.addEventListener('click', () => { audio.pause(); });
-  muteBtn.addEventListener('click', () => { audio.muted = !audio.muted; muteBtn.textContent = audio.muted ? 'Unmute' : 'Mute'; });
-  volumeEl.addEventListener('input', (e)=> { audio.volume = parseFloat(e.target.value); });
+  // ---- NEW: SocketIO Event Listener ----
+  // This is the single source of truth for the player
+  socket.on('state_update', (state) => {
+    console.log("Received state update:", state);
+    
+    isSyncing = true; // Set lock
+    
+    const item = playlist.find(p => String(p.id) === String(state.current_song_id));
+    
+    if (item) {
+        // --- 1. Load song if different ---
+        if (audio.dataset.id !== String(item.id)) {
+            console.log("Sync: Changing song");
+            playItem(item).then(() => {
+                // After loading, apply the state
+                applyPlayerState(state);
+            });
+            return; // Wait for song to load
+        }
+        
+        // --- 2. Apply the state (play, pause, seek) ---
+        applyPlayerState(state);
+        
+    } else {
+        // Song isn't in our playlist, so stop.
+        audio.pause();
+        songName.textContent = 'No file loaded';
+        songArtist.textContent = '---';
+        songAlbum.textContent = '---';
+        albumArt.style.display = 'none';
+        currentTimeEl.textContent = '0:00';
+        durationTimeEl.textContent = '0:00';
+        seekBar.value = 0;
+        seekBar.max = 0;
+    }
 
-  seekBtn.addEventListener('click', () => {
-    const s = parseFloat(seekSec.value) || 0;
-    if (audio.duration && s <= audio.duration) audio.currentTime = s;
+    // Release the lock
+    setTimeout(() => { isSyncing = false; }, 50); // Short delay
   });
+
+  // --- NEW: Helper to apply state from server ---
+  function applyPlayerState(state) {
+    // --- 2a. Seek ---
+    const timeDiff = Math.abs(audio.currentTime - state.current_time);
+    // Only seek if server is > 2s different, to avoid jitter
+    if (timeDiff > 2.0) {
+        console.log(`Sync: Seeking from ${audio.currentTime} to ${state.current_time}`);
+        audio.currentTime = state.current_time;
+    }
+    
+    // --- 2b. Play/Pause ---
+    if (state.is_playing && audio.paused) {
+        console.log("Sync: Playing");
+        audio.play().catch(e => console.warn("Sync play failed", e));
+        startVisuals();
+    } else if (!state.is_playing && !audio.paused) {
+        console.log("Sync: Pausing");
+        audio.pause();
+    }
+
+    // Update UI (redundant if timeupdate is firing, but good fallback)
+    seekBar.value = Math.floor(audio.currentTime);
+    currentTimeEl.textContent = timeFmt(audio.currentTime);
+  }
+
+  // ---- MODIFIED: Playback controls now EMIT events ----
+  playBtn.addEventListener('click', async () => { 
+    if (isSyncing) return;
+    
+    let songId = audio.dataset.id;
+    // If no song is loaded, play the first in the playlist
+    if (!songId && playlist.length > 0) {
+        songId = playlist[0].id;
+        // Need to load it first
+        await playItem(playlist[0]);
+    }
+    
+    if (!songId) return; // No song to play
+
+    console.log("Emitting PLAY");
+    socket.emit('player_action', {
+        action: "PLAY",
+        song_id: songId,
+        time: audio.currentTime
+    });
+  });
+
+  pauseBtn.addEventListener('click', () => { 
+    if (isSyncing) return;
+    console.log("Emitting PAUSE");
+    socket.emit('player_action', {
+        action: "PAUSE",
+        song_id: audio.dataset.id,
+        time: audio.currentTime
+    });
+  });
+
+  seekBar.addEventListener('input', () => {
+    // We update the local time display immediately for responsiveness
+    currentTimeEl.textContent = timeFmt(seekBar.value);
+  });
+  
+  seekBar.addEventListener('change', () => { // 'change' fires on mouse up
+    if (isSyncing) return;
+    
+    console.log("Emitting SEEK");
+    socket.emit('player_action', {
+        action: "SEEK",
+        song_id: audio.dataset.id,
+        time: parseFloat(seekBar.value)
+    });
+    // Set local audio time immediately
+    audio.currentTime = seekBar.value;
+  });
+
+  // --- Local-only controls (no changes) ---
+  muteBtn.addEventListener('click', () => { 
+    audio.muted = !audio.muted; 
+    muteBtn.textContent = audio.muted ? 'Unmute' : 'Mute'; 
+  });
+  volumeEl.addEventListener('input', (e)=> { audio.volume = parseFloat(e.target.value); });
   loopToggle.addEventListener('change', (e)=> { audio.loop = e.target.checked; });
+  
+  // --- Audio element listeners (only for UI updates) ---
+  audio.addEventListener('loadedmetadata', () => { 
+      durationTimeEl.textContent = timeFmt(audio.duration); 
+      seekBar.max = Math.floor(audio.duration);
+      try { ensureAudioCtx(); } catch(e){console.warn(e);} 
+  });
 
-  audio.addEventListener('loadedmetadata', () => { durationEl.textContent = timeFmt(audio.duration); try { ensureAudioCtx(); } catch(e){console.warn(e);} });
-  audio.addEventListener('timeupdate', () => { currentEl.textContent = timeFmt(audio.currentTime); });
-  audio.addEventListener('ended', () => { if (!audio.loop) stopVisuals(); });
+  audio.addEventListener('timeupdate', () => { 
+    // This runs constantly. We don't want to seek if the user is dragging.
+    if (!isSyncing) {
+        currentTimeEl.textContent = timeFmt(audio.currentTime); 
+        seekBar.value = Math.floor(audio.currentTime);
+    }
+  });
+  
+  audio.addEventListener('ended', () => { 
+      if (!audio.loop) {
+          stopVisuals();
+          // If not looping, just emit a pause event at the end
+          if (!isSyncing) {
+            socket.emit('player_action', {
+                action: "PAUSE",
+                song_id: audio.dataset.id,
+                time: audio.duration
+            });
+          }
+      }
+  });
 
-  // viz controls
+  // viz controls (no changes)
   vizSelect.addEventListener('change', (e)=> { vizMode = e.target.value; });
   sensitivityEl.addEventListener('input', (e)=> { sensitivity = parseFloat(e.target.value); });
+  window.addEventListener('resize', () => { if(rafId) resizeCanvas(); });
 
-  window.addEventListener('resize', () => { resizeCanvas(); });
-
-  // keyboard shortcuts
+  // keyboard shortcuts (MODIFIED for sync)
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space') { e.preventDefault(); if (audio.paused) playBtn.click(); else pauseBtn.click(); }
+    if (e.target.tagName === 'INPUT') return;
+    if (e.code === 'Space') { 
+        e.preventDefault(); 
+        if (audio.paused) playBtn.click(); 
+        else pauseBtn.click(); 
+    }
     if (e.key.toLowerCase() === 'm') muteBtn.click();
-    if (e.key === 'ArrowRight') audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 5);
-    if (e.key === 'ArrowLeft') audio.currentTime = Math.max(0, audio.currentTime - 5);
+    
+    // Seek shortcuts should also emit
+    if (e.key === 'ArrowRight') {
+        const newTime = Math.min(audio.duration || 0, audio.currentTime + 5);
+        audio.currentTime = newTime; // Local update
+        socket.emit('player_action', { action: "SEEK", song_id: audio.dataset.id, time: newTime });
+    }
+    if (e.key === 'ArrowLeft') {
+        const newTime = Math.max(0, audio.currentTime - 5);
+        audio.currentTime = newTime; // Local update
+        socket.emit('player_action', { action: "SEEK", song_id: audio.dataset.id, time: newTime });
+    }
   });
 
-  // refresh/save buttons
+  // refresh/save buttons (no changes)
   refreshBtn.addEventListener('click', () => { loadLocalPlaylist(); });
-  saveBtn.addEventListener('click', async () => {
-    const toSave = playlist.map(p => ({ name: p.name, path: p.path }));
+
+  // Audio Output Device (no changes)
+  async function loadAudioDevices() { /* ... no change ... */ 
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+      console.warn('enumerateDevices not supported.');
+      audioOutputEl.style.display = 'none';
+      return;
+    }
+    if (typeof audio.setSinkId !== 'function') {
+      console.warn('setSinkId not supported.');
+      audioOutputEl.style.display = 'none';
+      return;
+    }
     try {
-      await savePlaylistToServer(toSave);
-      alert('Playlist saved to server.');
-    } catch (e) { alert('Save failed: ' + e.message); }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioDevices = devices.filter(d => d.kind === 'audiooutput');
+      audioOutputEl.innerHTML = '<option value="default">Default Output</option>';
+      audioDevices.forEach(device => {
+        const opt = document.createElement('option');
+        opt.value = device.deviceId;
+        opt.textContent = device.label || `Output ${audioOutputEl.options.length}`;
+        audioOutputEl.appendChild(opt);
+      });
+    } catch (e) {
+      console.error('Failed to get audio devices', e);
+    }
+  }
+  audioOutputEl.addEventListener('change', async (e) => { /* ... no change ... */ 
+    try {
+      await audio.setSinkId(e.target.value);
+      console.log(`Audio output set to: ${e.target.value}`);
+    } catch (e) {
+      console.error('Failed to set audio output', e);
+    }
   });
 
-  // playlist click (play / cache / rename / delete)
+  // Art Uploader (no changes)
+  artUploader.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    const songId = e.target.dataset.songId; 
+    if (!file || !songId) return;
+    const formData = new FormData();
+    formData.append('id', songId);
+    formData.append('file', file);
+    try {
+      const res = await fetch('/playlist/upload-art', {
+        method: 'POST',
+        body: formData 
+      });
+      const result = await res.json();
+      if (res.ok && result.status === 'art_uploaded') {
+        alert('Album art updated!');
+        const item = playlist.find(p => String(p.id) === String(songId));
+        if (item) {
+          item.has_art = 1;
+        }
+        if (audio.dataset.id === songId) {
+          albumArt.src = `/art/${songId}.jpg?t=${new Date().getTime()}`;
+          albumArt.style.display = 'block';
+        }
+      } else {
+        alert('Art upload failed: ' + (result.error || 'Unknown error'));
+      }
+    } catch (err) {
+      console.error('Art upload fetch error:', err);
+      alert('Art upload failed: ' + err.message);
+    }
+    e.target.value = null;
+    e.target.dataset.songId = '';
+  });
+
+  // --- MODIFIED: playlist click handler (for sync) ---
   playlistEl.addEventListener('click', async (e) => {
-    const btn = e.target;
+    const btn = e.target.closest('button');
+    if (!btn || isSyncing) return;
+
+    const id = String(btn.dataset.id);
+    const item = playlist.find(p => String(p.id) === id);
+    if (!item) return;
+
     if (btn.classList.contains('play-song')) {
-      const id = String(btn.dataset.id);
-      const item = playlist.find(p => String(p.id) === id);
-      if (item) await playItem(item);
+      // NEW: Emit CHANGE_SONG event
+      console.log("Emitting CHANGE_SONG");
+      socket.emit('player_action', {
+          action: "CHANGE_SONG",
+          song_id: id
+      });
+    
     } else if (btn.classList.contains('cache-song')) {
-      const id = String(btn.dataset.id);
-      const item = playlist.find(p => String(p.id) === id);
-      if (item && item.origin === 'remote') {
+      // This is a local-only action, no change
+      if (item.origin === 'remote') {
         try {
           const blob = await fetch("/stream/" + item.path).then(r => r.blob());
           await saveFileToIDB(item.id, blob);
-          alert(`Cached ${item.name} for offline use.`);
+          alert(`Cached ${item.title || item.name} for offline use.`);
         } catch (e) { alert('Cache failed: '+e.message); }
       } else alert('Already local or cannot cache.');
+    
+    } else if (btn.classList.contains('upload-art')) {
+      // This is a local-only action, no change
+      artUploader.dataset.songId = id; 
+      artUploader.click();
+    
     } else if (btn.classList.contains('rename')) {
-      const id = String(btn.dataset.id);
-      const item = playlist.find(p => String(p.id) === id);
-      if (!item) return;
-      const newName = prompt("Rename song:", item.name);
-      if (!newName) return;
+      // This is a playlist management action, no change
+      const currentTitle = item.title || item.name;
+      const newName = prompt("Rename song:", currentTitle);
+      if (!newName || newName === currentTitle) return;
       try {
         const res = await renameSongOnServer(id, newName);
         if (res && res.status === 'renamed') {
-          item.name = newName;
-          item.path = res.path || item.path;
+          item.title = res.title;
           renderPlaylist();
           saveLocalPlaylist();
-          // if playing update src
           if (audio.dataset.id == id) {
-            audio.src = "/stream/" + item.path;
+            songName.textContent = item.title;
           }
         } else {
           alert('Rename failed.');
         }
       } catch (e) { alert('Rename failed: ' + e.message); }
+    
     } else if (btn.classList.contains('delete')) {
-      const id = String(btn.dataset.id);
-      const item = playlist.find(p => String(p.id) === id);
-      if (!item) return;
-      if (!confirm(`Delete "${item.name}"? This will remove the file from server.`)) return;
+      // This is a playlist management action, no change
+      if (!confirm(`Delete "${item.title || item.name}"? This will remove the file from server.`)) return;
       try {
         const res = await deleteSongOnServer(id);
         if (res && res.status === 'deleted') {
           playlist = playlist.filter(p => String(p.id) !== id);
           renderPlaylist();
           saveLocalPlaylist();
-          // stop if that was playing
+          
+          // If the deleted song was playing, we need to tell the server to stop
           if (audio.dataset.id == id) {
-            audio.pause(); audio.src = '';
-            songName.textContent = 'No file loaded';
+              socket.emit('player_action', {
+                  action: "PAUSE",
+                  song_id: null,
+                  time: 0
+              });
+              // The server's 'state_update' will handle the UI cleanup
           }
         } else {
           alert('Delete failed');
@@ -496,15 +726,14 @@
     }
   });
 
-  // Drag & drop reorder logic inside playlist container
+  // Drag & drop reorder logic (no changes)
   let dragEl = null;
-  playlistEl.addEventListener('dragstart', (e) => {
+  playlistEl.addEventListener('dragstart', (e) => { /* ... no change ... */ 
     dragEl = e.target.closest('.playlist-item');
     if (!dragEl) return;
     e.dataTransfer.effectAllowed = 'move';
   });
-
-  playlistEl.addEventListener('dragover', (e) => {
+  playlistEl.addEventListener('dragover', (e) => { /* ... no change ... */ 
     e.preventDefault();
     const target = e.target.closest('.playlist-item');
     if (!target || !dragEl || target === dragEl) return;
@@ -512,39 +741,41 @@
     const after = (e.clientY - rect.top) > (rect.height / 2);
     playlistEl.insertBefore(dragEl, after ? target.nextSibling : target);
   });
-
-  playlistEl.addEventListener('drop', async (e) => {
+  playlistEl.addEventListener('drop', async (e) => { /* ... no change ... */ 
     e.preventDefault();
     dragEl = null;
-    // compute new order and send to server
     const order = [...playlistEl.querySelectorAll('.playlist-item')].map(el => el.dataset.id);
     try {
       await reorderOnServer(order);
-      // reorder local playlist to match
       playlist = order.map(id => playlist.find(p => String(p.id) === String(id))).filter(Boolean);
-      renderPlaylist();
       saveLocalPlaylist();
     } catch (err) {
       console.warn('reorder failed', err);
+      loadLocalPlaylist();
     }
   });
 
-  // init
+  // init (no changes)
   (async function init() {
     resizeCanvas();
-    await loadLocalPlaylist();
-    const last = await getMeta('lastPlayed');
-    if (last) {
-      const item = playlist.find(p=>String(p.id) === String(last));
-      if (item) songName.textContent = item.name;
-    }
-    document.addEventListener('click', () => { if (!audioCtx) ensureAudioCtx(); }, { once:true });
+    // Load playlist first, so we have it when the connect event fires
+    await loadLocalPlaylist(); 
+    
+    // The 'connect' event from socket.io will now handle
+    // syncing the player state, so we don't need to load 'lastPlayed' here.
+    
+    loadAudioDevices();
+    
+    document.addEventListener('click', () => { 
+        if (!audioCtx) ensureAudioCtx(); 
+        loadAudioDevices();
+    }, { once:true });
   })();
 
-  // helpers
+  // helpers (no changes)
   window.DW = { playlist, renderPlaylist, saveLocalPlaylist, playItem, addFileLocal };
 
-  // service worker registration
+  // service worker registration (no change)
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').then(()=> console.log('SW registered')).catch(console.warn);
   }

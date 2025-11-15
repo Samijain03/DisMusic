@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>DisMusic</title>
+  <title>DarkWave — Custom Browser</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -14,7 +14,7 @@
     <header class="topbar">
       <div class="title">
         <span class="logo">SDN</span>
-        <span class="name">DisMusic</span>
+        <span class="name">DarkWave</span>
       </div>
 
       <div class="controls">
@@ -38,42 +38,51 @@
             <option value="particles">Particles</option>
           </select>
 
+          <select id="audioOutput" title="Audio Output">
+            <option value="default">Default Output</option>
+          </select>
+
           <label class="small">Sensitivity
             <input id="sensitivity" type="range" min="0.5" max="3" step="0.1" value="1.2">
           </label>
+        </div>
+
+        <div class="art-wrap">
+          <img id="albumArt" alt="Album Art" src="">
         </div>
 
         <div class="wave-wrap">
           <canvas id="visual" width="1200" height="300"></canvas>
         </div>
 
-        <div class="seek-row">
-          <label>Seek to (sec): <input id="seekSec" type="number" min="0" step="1" value="0"></label>
-          <button id="seekBtn" class="btn small">Go</button>
-
-          <label style="margin-left:12px"><input id="loopToggle" type="checkbox" checked> Loop</label>
+        <div class="seek-bar-container">
+          <span id="currentTime" class="time-display">0:00</span>
+          <input type="range" id="seekBar" class="seek-bar" value="0" min="0" step="1">
+          <span id="durationTime" class="time-display">0:00</span>
         </div>
 
-        <div class="volume-row">
-          <label>Volume</label>
-          <input id="volume" type="range" min="0" max="1" step="0.01" value="0.9">
+        <div class="playback-controls-row">
+          <label><input id="loopToggle" type="checkbox" checked> Loop</label>
+          <div class="volume-row">
+            <label>Volume</label>
+            <input id="volume" type="range" min="0" max="1" step="0.01" value="0.9">
+          </div>
         </div>
+
       </div>
 
       <aside class="right-panel">
         <div class="meta">
-          <p><strong>Song:</strong> <span id="songName">No file loaded</span></p>
-          <p><strong>Duration:</strong> <span id="duration">0:00</span></p>
-          <p><strong>Current:</strong> <span id="current">0:00</span></p>
+          <p><strong>Title:</strong> <span id="songName">No file loaded</span></p>
+          <p><strong>Artist:</strong> <span id="songArtist">---</span></p>
+          <p><strong>Album:</strong> <span id="songAlbum">---</span></p>
         </div>
 
         <div class="playlist-section">
           <div class="playlist-header">
             <strong>Playlist</strong>
             <button id="refreshList" class="btn small">Refresh</button>
-            <button id="saveList" class="btn small">Save</button>
-          </div>
-          <!-- playlist container: items inserted by JS -->
+            </div>
           <div id="playlist" class="playlist" aria-live="polite" role="list"></div>
         </div>
 
@@ -84,8 +93,9 @@
     </section>
 
     <audio id="audio" crossorigin="anonymous"></audio>
+    <input type="file" id="artUploader" accept="image/jpeg,image/png,image/webp" style="display:none">
   </main>
-
+  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
