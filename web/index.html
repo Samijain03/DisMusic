@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DisMusic</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="bg"></div>
+
+  <main class="ui" role="main">
+    <header class="topbar">
+      <div class="title">
+        <span class="logo">SDN</span>
+        <span class="name">DisMusic</span>
+      </div>
+
+      <div class="controls">
+        <label class="file">
+          <input id="fileInput" type="file" accept="audio/*" />
+          <span>Load song</span>
+        </label>
+        <button id="playBtn" class="btn">Play</button>
+        <button id="pauseBtn" class="btn">Pause</button>
+        <button id="muteBtn" class="btn">Mute</button>
+      </div>
+    </header>
+
+    <section class="content">
+      <div class="left-panel">
+        <div class="visual-controls">
+          <select id="vizSelect" title="Visualizer">
+            <option value="wave">Waveform</option>
+            <option value="bars">Frequency Bars</option>
+            <option value="circle">Circular Spectrum</option>
+            <option value="particles">Particles</option>
+          </select>
+
+          <label class="small">Sensitivity
+            <input id="sensitivity" type="range" min="0.5" max="3" step="0.1" value="1.2">
+          </label>
+        </div>
+
+        <div class="wave-wrap">
+          <canvas id="visual" width="1200" height="300"></canvas>
+        </div>
+
+        <div class="seek-row">
+          <label>Seek to (sec): <input id="seekSec" type="number" min="0" step="1" value="0"></label>
+          <button id="seekBtn" class="btn small">Go</button>
+
+          <label style="margin-left:12px"><input id="loopToggle" type="checkbox" checked> Loop</label>
+        </div>
+
+        <div class="volume-row">
+          <label>Volume</label>
+          <input id="volume" type="range" min="0" max="1" step="0.01" value="0.9">
+        </div>
+      </div>
+
+      <aside class="right-panel">
+        <div class="meta">
+          <p><strong>Song:</strong> <span id="songName">No file loaded</span></p>
+          <p><strong>Duration:</strong> <span id="duration">0:00</span></p>
+          <p><strong>Current:</strong> <span id="current">0:00</span></p>
+        </div>
+
+        <div class="playlist-section">
+          <div class="playlist-header">
+            <strong>Playlist</strong>
+            <button id="refreshList" class="btn small">Refresh</button>
+            <button id="saveList" class="btn small">Save</button>
+          </div>
+          <!-- playlist container: items inserted by JS -->
+          <div id="playlist" class="playlist" aria-live="polite" role="list"></div>
+        </div>
+
+        <div class="theme-note">
+          <p>Drag & drop audio files or use the file picker. Files are uploaded to the Python server and persisted.</p>
+        </div>
+      </aside>
+    </section>
+
+    <audio id="audio" crossorigin="anonymous"></audio>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
