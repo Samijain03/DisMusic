@@ -9,3 +9,4 @@ SQLAlchemy
 psycopg2-binary
 boto3
 flask_sqlalchemy
+python-dotenv

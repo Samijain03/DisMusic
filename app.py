@@ -1,4 +1,10 @@
 # app.py
+import eventlet
+eventlet.monkey_patch()
+
+from dotenv import load_dotenv
+load_dotenv() # This loads the .env file on your local machine
+
 import os
 import time
 from pathlib import Path
@@ -14,7 +20,8 @@ from botocore.exceptions import ClientError
 from io import BytesIO
 
 # --- 1. Load Environment Variables ---
-# These MUST be set in your Render environment
+# These are NOW loaded from your .env file locally, 
+# or from Render's environment when deployed.
 DATABASE_URL = os.environ.get('DATABASE_URL')
 S3_BUCKET = os.environ.get('S3_BUCKET')
 S3_KEY = os.environ.get('S3_KEY')
@@ -22,7 +29,7 @@ S3_SECRET = os.environ.get('S3_SECRET')
 S3_ENDPOINT_URL = os.environ.get('S3_ENDPOINT_URL')
 
 if not all([DATABASE_URL, S3_BUCKET, S3_KEY, S3_SECRET, S3_ENDPOINT_URL]):
-    raise EnvironmentError("Missing required environment variables for DB or S3. Please check Render dashboard.")
+    raise EnvironmentError("Missing required environment variables. Did you create your .env file?")
 
 # --- 2. Flask App Setup ---
 BASE = Path(__file__).resolve().parent
@@ -114,6 +121,7 @@ def index():
 def static_files(filename):
     target = WEB_DIR / filename
     if target.exists():
+        # Prevent access to sensitive files
         if filename in ["app.py", "requirements.txt", "README.md", ".env"]:
             return abort(404)
         return send_from_directory(str(WEB_DIR), filename)
@@ -140,6 +148,7 @@ def upload():
     while True:
         try:
             s3.head_object(Bucket=S3_BUCKET, Key=s3_path)
+            # File exists, try a new name
             name, ext = os.path.splitext(filename)
             safe_name = f"{name}_{counter}{ext}"
             s3_path = f"uploads/{safe_name}"
@@ -208,11 +217,13 @@ def upload():
 def stream(filepath):
     if ".." in filepath: return abort(404)
     try:
+        # Generate a temporary (1 hr) URL for the browser to use
         url = s3.generate_presigned_url(
             'get_object',
             Params={'Bucket': S3_BUCKET, 'Key': filepath},
             ExpiresIn=3600  # Valid for 1 hour
         )
+        # Redirect the browser to that temporary URL
         return redirect(url)
     except Exception as e:
         print(f"S3 presign error: {e}")
@@ -227,7 +238,7 @@ def get_art(song_id):
         url = s3.generate_presigned_url(
             'get_object',
             Params={'Bucket': S3_BUCKET, 'Key': f"art/{song_id}.jpg"},
-            ExpiresIn=3600
+            ExpiresIn=3600 # Valid for 1 hour
         )
         return redirect(url)
     except Exception as e:
@@ -251,16 +262,20 @@ def upload_art():
     if not song_id or not file: return jsonify({"error": "missing id or file"}), 400
     song = db.session.get(Playlist, int(song_id))
     if not song: return jsonify({"error": "song not found"}), 404
+    
     file_data = file.read()
     file.seek(0)
     file_mime_type = magic.from_buffer(file_data, mime=True)
     if file_mime_type not in ALLOWED_IMAGE_MIME_TYPES:
         return jsonify({"error": f"File type not allowed: {file_mime_type}"}), 400
+    
     try:
+        # Upload the art file to S3
         s3.upload_fileobj(
             BytesIO(file_data), S3_BUCKET, f"art/{song_id}.jpg",
             ExtraArgs={'ContentType': file_mime_type}
         )
+        # Update the database
         song.has_art = 1
         db.session.commit()
         return jsonify({"status": "art_uploaded", "id": song_id})
@@ -272,25 +287,33 @@ def upload_art():
 def delete_song():
     song_id = (request.get_json() or {}).get("id")
     if not song_id: return jsonify({"error": "missing id"}), 400
+    
     song = db.session.get(Playlist, int(song_id))
     if not song: return jsonify({"error": "not found"}), 404
+    
     try:
+        # Delete the song file from S3
         s3.delete_object(Bucket=S3_BUCKET, Key=song.path)
         if song.has_art:
+            # Delete the art file from S3
             s3.delete_object(Bucket=S3_BUCKET, Key=f"art/{song.id}.jpg")
     except Exception as e:
         print(f"S3 delete error: {e}") # Log error but continue
+    
+    # Delete the song record from Postgres
     db.session.delete(song)
     db.session.commit()
     return jsonify({"status": "deleted"})
 
 @app.route("/playlist/rename", methods=["POST"])
 def rename_song():
-    data, song_id = request.get_json() or {}, data.get("id")
-    new_name = data.get("name")
+    data = request.get_json() or {}
+    song_id, new_name = data.get("id"), data.get("name")
     if not new_name: return jsonify({"error": "invalid name"}), 400
+    
     song = db.session.get(Playlist, int(song_id))
     if not song: return jsonify({"error": "not found"}), 404
+    
     song.title = new_name
     db.session.commit()
     return jsonify({"status": "renamed", "title": new_name})
@@ -299,7 +322,9 @@ def rename_song():
 def reorder_playlist():
     order = (request.get_json() or {}).get("order", [])
     if not isinstance(order, list): return jsonify({"error": "invalid order"}), 400
+    
     try:
+        # Update the ordering for each song
         for index, song_id in enumerate(order):
             song = db.session.get(Playlist, int(song_id))
             if song: song.ordering = index
@@ -316,8 +341,13 @@ def reorder_playlist():
 with app.app_context():
     db.create_all()
 
-# --- 12. Run the App (for development only) ---
+# --- 12. Run the App (for development or production) ---
 if __name__ == "__main__":
+    # This block runs when you execute `python app.py`
     print("Starting Flask-SocketIO development server at http://127.0.0.1:8080")
-    # You must set environment variables locally to run this
     socketio.run(app, "127.0.0.1", 8080, debug=True)
+else:
+    # This block runs when Gunicorn starts the app on Render
+    # The `app:app` in your start command points Gunicorn here.
+    # We pass the Flask 'app' object to SocketIO to wrap it.
+    app = socketio.init_app(app)
