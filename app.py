@@ -20,8 +20,6 @@ from botocore.exceptions import ClientError
 from io import BytesIO
 
 # --- 1. Load Environment Variables ---
-# These are NOW loaded from your .env file locally, 
-# or from Render's environment when deployed.
 DATABASE_URL = os.environ.get('DATABASE_URL')
 S3_BUCKET = os.environ.get('S3_BUCKET')
 S3_KEY = os.environ.get('S3_KEY')
@@ -69,7 +67,9 @@ class Playlist(db.Model):
     created_at = db.Column(db.DateTime, server_default=db.func.now())
 
 # --- 6. SocketIO Setup & Handlers ---
+# This line is all we need. It correctly links SocketIO and Flask.
 socketio = SocketIO(app, async_mode='eventlet') 
+
 server_state = {
     "current_song_id": None, "is_playing": False,
     "current_time": 0, "last_update_time": time.time()
@@ -212,24 +212,20 @@ def upload():
     })
 
 # --- 9. API: File Streaming (from S3) ---
-# This generates a secure, temporary link for the private S3 file
 @app.route("/stream/<path:filepath>")
 def stream(filepath):
     if ".." in filepath: return abort(404)
     try:
-        # Generate a temporary (1 hr) URL for the browser to use
         url = s3.generate_presigned_url(
             'get_object',
             Params={'Bucket': S3_BUCKET, 'Key': filepath},
             ExpiresIn=3600  # Valid for 1 hour
         )
-        # Redirect the browser to that temporary URL
         return redirect(url)
     except Exception as e:
         print(f"S3 presign error: {e}")
         return abort(404)
 
-# This generates a secure, temporary link for the private S3 art file
 @app.route("/art/<int:song_id>.jpg")
 def get_art(song_id):
     song = db.session.get(Playlist, song_id)
@@ -270,12 +266,10 @@ def upload_art():
         return jsonify({"error": f"File type not allowed: {file_mime_type}"}), 400
     
     try:
-        # Upload the art file to S3
         s3.upload_fileobj(
             BytesIO(file_data), S3_BUCKET, f"art/{song_id}.jpg",
             ExtraArgs={'ContentType': file_mime_type}
         )
-        # Update the database
         song.has_art = 1
         db.session.commit()
         return jsonify({"status": "art_uploaded", "id": song_id})
@@ -292,15 +286,12 @@ def delete_song():
     if not song: return jsonify({"error": "not found"}), 404
     
     try:
-        # Delete the song file from S3
         s3.delete_object(Bucket=S3_BUCKET, Key=song.path)
         if song.has_art:
-            # Delete the art file from S3
             s3.delete_object(Bucket=S3_BUCKET, Key=f"art/{song.id}.jpg")
     except Exception as e:
         print(f"S3 delete error: {e}") # Log error but continue
     
-    # Delete the song record from Postgres
     db.session.delete(song)
     db.session.commit()
     return jsonify({"status": "deleted"})
@@ -324,7 +315,6 @@ def reorder_playlist():
     if not isinstance(order, list): return jsonify({"error": "invalid order"}), 400
     
     try:
-        # Update the ordering for each song
         for index, song_id in enumerate(order):
             song = db.session.get(Playlist, int(song_id))
             if song: song.ordering = index
@@ -336,18 +326,15 @@ def reorder_playlist():
         return jsonify({"error": "reorder failed"}), 500
 
 # --- 11. Create Database Tables ---
-# This will run when the app starts, ensuring tables exist.
-# `create_all()` is safe and won't re-create existing tables.
 with app.app_context():
     db.create_all()
 
-# --- 12. Run the App (for development or production) ---
+# --- 12. Run the App (for development only) ---
 if __name__ == "__main__":
     # This block runs when you execute `python app.py`
     print("Starting Flask-SocketIO development server at http://127.0.0.1:8080")
     socketio.run(app, "127.0.0.1", 8080, debug=True)
-else:
-    # This block runs when Gunicorn starts the app on Render
-    # The `app:app` in your start command points Gunicorn here.
-    # We pass the Flask 'app' object to SocketIO to wrap it.
-    app = socketio.init_app(app)
+
+# THE `else` BLOCK IS NOW GONE.
+# When Gunicorn runs `app:app`, it will find the `app` variable
+# defined on line 40, which is the correct callable Flask object.
