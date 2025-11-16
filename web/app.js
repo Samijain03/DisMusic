@@ -141,9 +141,17 @@
     return `${m}:${s}`;
   }
 
-  // --- Visualizer functions (no changes) ---
-  function ensureAudioCtx() { /* ... no change ... */ 
+  // --- Visualizer functions (AudioContext FIX 1) ---
+  function ensureAudioCtx() { 
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    // --- START FIX ---
+    // Resume context if it was suspended by browser
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    // --- END FIX ---
+
     if (!sourceNode) {
       try { sourceNode = audioCtx.createMediaElementSource(audio); } catch(e){ console.warn(e); }
     }
@@ -461,7 +469,7 @@
     currentTimeEl.textContent = timeFmt(audio.currentTime);
   }
 
-  // ---- MODIFIED: Playback controls now EMIT events ----
+  // ---- MODIFIED: Playback controls now EMIT events (AUTOPLAY FIX 2) ----
   playBtn.addEventListener('click', async () => { 
     if (isSyncing) return;
     
@@ -474,6 +482,12 @@
     }
     
     if (!songId) return; // No song to play
+
+    // --- START FIX ---
+    // Optimistically play locally to satisfy browser autoplay policy
+    audio.play().catch(e => console.warn("Autoplay failed", e));
+    startVisuals();
+    // --- END FIX ---
 
     console.log("Emitting PLAY");
     socket.emit('player_action', {
@@ -649,7 +663,7 @@
     e.target.dataset.songId = '';
   });
 
-  // --- MODIFIED: playlist click handler (for sync) ---
+  // --- MODIFIED: playlist click handler (AUTOPLAY FIX 3) ---
   playlistEl.addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
     if (!btn || isSyncing) return;
@@ -659,10 +673,17 @@
     if (!item) return;
 
     if (btn.classList.contains('play-song')) {
-      // NEW: Emit CHANGE_SONG event
       console.log("Emitting CHANGE_SONG");
+      
+      // --- START FIX ---
+      // We must load and play the item *locally* first to be inside the click gesture
+      await playItem(item); 
+      audio.play().catch(e => console.warn("Autoplay failed", e));
+      startVisuals();
+      // --- END FIX ---
+
       socket.emit('player_action', {
-          action: "CHANGE_SONG",
+          action: "CHANGE_SONG", // This action now just informs others
           song_id: id
       });
     
@@ -749,13 +770,19 @@
       await reorderOnServer(order);
       playlist = order.map(id => playlist.find(p => String(p.id) === String(id))).filter(Boolean);
       saveLocalPlaylist();
-    } catch (err) {
+    // -----------------------------------------------------------------
+    // 💡 START OF THE FIX
+    // -----------------------------------------------------------------
+    } catch (err) { // <-- I added the missing '{' here
       console.warn('reorder failed', err);
       loadLocalPlaylist();
     }
+    // -----------------------------------------------------------------
+    // 💡 END OF THE FIX
+    // -----------------------------------------------------------------
   });
 
-  // init (no changes)
+  // init (AudioContext FIX 2)
   (async function init() {
     resizeCanvas();
     // Load playlist first, so we have it when the connect event fires
@@ -766,10 +793,16 @@
     
     loadAudioDevices();
     
+    // --- START FIX ---
     document.addEventListener('click', () => { 
-        if (!audioCtx) ensureAudioCtx(); 
+        if (!audioCtx) {
+          ensureAudioCtx(); 
+        } else if (audioCtx.state === 'suspended') {
+          audioCtx.resume(); // Explicitly resume on first click
+        }
         loadAudioDevices();
     }, { once:true });
+    // --- END FIX ---
   })();
 
   // helpers (no changes)

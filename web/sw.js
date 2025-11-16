@@ -8,7 +8,25 @@ self.addEventListener('install', e => {
   self.skipWaiting();
 });
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
-  e.respondWith(caches.match(e.request).then(cached => cached || fetch(e.request).catch(()=>caches.match('/index.html'))));
+
+  const url = new URL(e.request.url);
+
+  // --- START FIX ---
+  // Don't cache API calls, streams, or Socket.IO
+  if (url.pathname.startsWith('/stream/') ||
+      url.pathname.startsWith('/art/') ||
+      url.pathname.startsWith('/playlist') ||
+      url.pathname.startsWith('/socket.io/')) {
+    return; // Let the browser handle network requests
+  }
+  // --- END FIX ---
+
+  e.respondWith(
+    caches.match(e.request).then(cached => 
+      cached || fetch(e.request).catch(()=>caches.match('/index.html'))
+    )
+  );
 });
