@@ -1,4 +1,4 @@
-# DarkWave Player
+# Mecha Man Player
 
 A synchronized, shared music player built with Python, Flask-SocketIO, and JavaScript.
 This project is designed for deployment on Render, using Postgres for the database and S3-compatible storage for file uploads.

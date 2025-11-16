@@ -1,4 +1,4 @@
-const CACHE_NAME = "darkwave-v1";
+const CACHE_NAME = "Mecha Man-v1";
 const STATIC_ASSETS = [
   "/index.html", "/style.css", "/app.js", "/background.jpg", "/manifest.json"
 ];
