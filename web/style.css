@@ -211,3 +211,24 @@ input[type="range"]::-moz-range-track {
   .art-wrap { max-width: 120px; }
   .topbar{ flex-direction:column; align-items:flex-start; gap:10px }
 }
+
+/* --- NEW: Toast Notification Styles --- */
+.toast-notification {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translate(-50%, -100px); /* Start off-screen */
+  background-color: var(--accent);
+  color: #07090C;
+  font-weight: 600;
+  padding: 12px 20px;
+  border-radius: 8px;
+  z-index: 1000;
+  opacity: 0;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+}
+.toast-notification.show {
+  transform: translate(-50%, 0);
+  opacity: 1;
+}

@@ -9,6 +9,25 @@
   const socket = io();
   let isSyncing = false; // Lock to prevent event feedback loops
 
+  // ---- NEW: Non-blocking toast notification function ----
+  function showToast(message) {
+    const toast = document.createElement('div');
+    toast.className = 'toast-notification';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => {
+      toast.classList.add('show');
+    }, 10);
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => {
+        if (document.body.contains(toast)) {
+          document.body.removeChild(toast);
+        }
+      }, 300);
+    }, 3000);
+  }
+
   // ---- Flask server API (UNCHANGED) ----
   // These functions (uploadSong, loadPlaylistFromServer, etc.)
   // are still used for managing the playlist, just not for playback.
@@ -379,13 +398,13 @@
           await saveFileToIDB(serverItem.id, file);
         } catch(e){ console.warn('cache server file failed', e); }
       } else {
-        alert('Upload failed: ' + (res.error || 'Unknown error'));
+        showToast('Upload failed: ' + (res.error || 'Unknown error'));
         playlist = playlist.filter(p => p.id !== tempId);
         renderPlaylist();
       }
     } catch (e) {
       console.error('upload failed', e);
-      alert('Upload failed: ' + e.message);
+      showToast('Upload failed: ' + e.message);
       playlist = playlist.filter(p => p.id !== tempId);
       renderPlaylist();
     }
@@ -628,7 +647,7 @@
     }
   });
 
-  // Art Uploader (no changes)
+  // Art Uploader (MODIFIED to use showToast)
   artUploader.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     const songId = e.target.dataset.songId; 
@@ -643,7 +662,10 @@
       });
       const result = await res.json();
       if (res.ok && result.status === 'art_uploaded') {
-        alert('Album art updated!');
+        // --- START FIX ---
+        // alert('Album art updated!'); // REMOVED
+        showToast('Album art updated!'); // ADDED
+        // --- END FIX ---
         const item = playlist.find(p => String(p.id) === String(songId));
         if (item) {
           item.has_art = 1;
@@ -653,11 +675,13 @@
           albumArt.style.display = 'block';
         }
       } else {
-        alert('Art upload failed: ' + (result.error || 'Unknown error'));
+        // alert('Art upload failed: ' + (result.error || 'Unknown error')); // REMOVED
+        showToast('Art upload failed: ' + (result.error || 'Unknown error')); // ADDED
       }
     } catch (err) {
       console.error('Art upload fetch error:', err);
-      alert('Art upload failed: ' + err.message);
+      // alert('Art upload failed: ' + err.message); // REMOVED
+      showToast('Art upload failed: ' + err.message); // ADDED
     }
     e.target.value = null;
     e.target.dataset.songId = '';
@@ -693,9 +717,9 @@
         try {
           const blob = await fetch("/stream/" + item.path).then(r => r.blob());
           await saveFileToIDB(item.id, blob);
-          alert(`Cached ${item.title || item.name} for offline use.`);
-        } catch (e) { alert('Cache failed: '+e.message); }
-      } else alert('Already local or cannot cache.');
+          showToast(`Cached ${item.title || item.name} for offline use.`);
+        } catch (e) { showToast('Cache failed: '+e.message); }
+      } else showToast('Already local or cannot cache.');
     
     } else if (btn.classList.contains('upload-art')) {
       // This is a local-only action, no change
@@ -717,9 +741,9 @@
             songName.textContent = item.title;
           }
         } else {
-          alert('Rename failed.');
+          showToast('Rename failed.');
         }
-      } catch (e) { alert('Rename failed: ' + e.message); }
+      } catch (e) { showToast('Rename failed: ' + e.message); }
     
     } else if (btn.classList.contains('delete')) {
       // This is a playlist management action, no change
@@ -741,9 +765,9 @@
               // The server's 'state_update' will handle the UI cleanup
           }
         } else {
-          alert('Delete failed');
+          showToast('Delete failed');
         }
-      } catch (e) { alert('Delete failed: ' + e.message); }
+      } catch (e) { showToast('Delete failed: ' + e.message); }
     }
   });
 
@@ -770,16 +794,10 @@
       await reorderOnServer(order);
       playlist = order.map(id => playlist.find(p => String(p.id) === String(id))).filter(Boolean);
       saveLocalPlaylist();
-    // -----------------------------------------------------------------
-    // 💡 START OF THE FIX
-    // -----------------------------------------------------------------
-    } catch (err) { // <-- I added the missing '{' here
+    } catch (err) { 
       console.warn('reorder failed', err);
       loadLocalPlaylist();
     }
-    // -----------------------------------------------------------------
-    // 💡 END OF THE FIX
-    // -----------------------------------------------------------------
   });
 
   // init (AudioContext FIX 2)
